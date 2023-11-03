@@ -1,0 +1,11 @@
+QC folder is creating or updating QC images.  
+  
+The QC spreadsheet will return once this is complete. 
+
+If you need the spreadsheet now, a copy can be found on the neurocluster: /home/jagust/petcore/qc/<project>/<tracer>
+  
+Please wait :)
+
+
+
+Why am I seeing this?  When updating and creating QC images, the pipeline uses a copy of the QC spreadsheet to run tasks such as updating the "needs_qc" folder. If changes to the spreadsheet are made on Google in the middle of processing new images, there is a chance the new QC rows will not be saved. Therefore, it is safest to take down the spreadsheet to prevent this conflict. 

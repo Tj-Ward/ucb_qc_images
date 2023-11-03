@@ -1,0 +1,361 @@
+#!/usr/bin/env bash
+
+APREFIX="a_"
+KEEP_TRANS=false
+KEEP_OUT=false
+AFNI_ALIGN_SS=false
+AFNI_ALIGN_COST=lpc
+#VERBOSE_STR='/dev/null'
+declare -a AFNI_ALIGN_NN=()
+declare -a AFNI_ALIGN_LIN=()
+# Default template. Shifted origin to center ACPC as opposed to default AC origin. (So that the head is centered in the image)
+AFNI_ALIGN_TEMPLATE="/home/jagust/adni/pipeline_scripts/Templates_ROIs/MNI_Templates_and_More/TT_N27_brainmask.nii"
+
+# A good full head template: /home/jagust/tjward/Templates/spmdefault_1mm_MNI_avg152T1.nii
+
+
+while test $# -gt 0; do
+  case "$1" in
+    -h|--help)
+      echo " "
+      echo "#   ***********************"
+      echo "#   *** Nifty Align Tool **"
+      echo "#   ***********************"
+      echo "#   "
+      echo "#   Align nifti images to a template using rigid transformation"
+      echo "#   "
+      echo "#   Do not use periods (.) in image names, all text after the first (.) is treated as an extension"
+      echo "#   "
+      echo "#   Some more comments are available in the script. This isn't well written or anything."
+      echo "#   A better approach would be re-writing @auto_tlrc which is itself a wraper of AFNI tools"
+      echo "#   This is better than using 3dwarpdrive or other registration tools I have found because it uses"
+      echo "#   Nonlinear warping to find the alignment, then it estimates a rigid-body transformation to fit"
+      echo "#   "
+      echo "#   All credit goes to the AFNI team, this is just a dumb script to automate a few things."
+      echo "#   -tjw (07-2021)"
+      echo "#    "
+      echo "      options:"
+      echo "      -h, --help                    Show brief help"
+      echo "      -i, --input       <path>      Input T1 (brainmask)"
+      echo "          --skullstrip              Skull strip flag (optional)"
+      echo "                                      Adds a lot of time"
+      echo "          --template    <path>      Template to align to (optional)"
+      echo "                                      Default template is skullstripped TT_N27_brainmask.nii"
+      echo "                                      Either SS your input or use SS'd vol"
+      echo "                                      SS alignment is more accurate/reliable."
+      echo "      -n, --nearest     <path>      Reslice img with NN"
+      echo "      -l, --linear      <path>      Reslice img with trilinear"
+      echo "          --keepmat                 Keep the afni transformation matrix"
+      echo "          --prefix      <str>       Prefix for output (default: 'a_')"
+      echo "          --nmi                     NMI cost funct. Default is lpc, good for T1w"
+      echo "                                      Good for PET alignment"
+      echo "                                    AFNI offers many good cost functions, just edit the"
+      echo "                                      script if you want to use a different one"
+      echo ""
+      exit 0
+      ;;
+    -i)
+      shift
+      if test $# -gt 0; then
+        export AFNI_ALIGN_INPUT=$1
+      else
+        echo "no process specified"
+        exit 1
+      fi
+      shift
+      ;;
+    --input)
+      shift
+      export AFNI_ALIGN_INPUT=`echo $1 | sed -e 's/^[^=]*=//g'`
+      shift
+      ;;
+    -n)
+      shift
+      if test $# -gt 0; then
+	    export AFNI_ALIGN_NN+=($1)
+      fi
+      shift
+      ;;
+    --nearest*)
+      shift
+      export AFNI_ALIGN_NN+=(`echo $1 | sed -e 's/^[^=]*=//g'`)
+      shift
+      ;;
+    -l)
+      shift
+      if test $# -gt 0; then
+	    export AFNI_ALIGN_LIN+=($1)
+      fi
+      shift
+      ;;
+    --linear*)
+      shift
+      export AFNI_ALIGN_LIN+=(`echo $1 | sed -e 's/^[^=]*=//g'`)
+      shift
+      ;;
+    -t)
+      shift
+      if test $# -gt 0; then
+            export AFNI_ALIGN_TEMPLATE=($1)
+      fi
+      shift
+      ;;
+    --template*)
+      shift
+      export AFNI_ALIGN_TEMPLATE=(`echo $1 | sed -e 's/^[^=]*=//g'`)
+      shift
+      ;;
+    --prefix*)
+      shift
+      export APREFIX=(`echo $1 | sed -e 's/^[^=]*=//g'`)
+      shift
+      ;;
+    --nmi)
+      export AFNI_ALIGN_COST="nmi"
+      shift
+      ;;
+    --skullstrip)
+      export AFNI_ALIGN_SS=true
+      shift
+      ;;
+    --keepmat)
+      export KEEP_TRANS=true
+      shift
+      ;;
+    #--verbose)
+    #  export VERBOSE_STR="&1"
+    #  shift
+    #  ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+# Read our the input args:
+echo "Input: $AFNI_ALIGN_INPUT"
+if [ ! -f "$AFNI_ALIGN_INPUT" ]; then
+    echo "ERROR: $AFNI_ALIGN_INPUT does not exist."
+    exit
+fi
+
+echo "Skullstrip: $AFNI_ALIGN_SS"
+
+echo "Template: $AFNI_ALIGN_TEMPLATE"
+if [ ! -f "$AFNI_ALIGN_TEMPLATE" ]; then
+    echo "ERROR: $AFNI_ALIGN_TEMPLATE does not exist."
+    exit
+fi
+
+for ELEMENT in ${AFNI_ALIGN_NN[@]}
+do
+echo "Nearest: $ELEMENT"
+if [ ! -f "$ELEMENT" ]; then
+    echo "ERROR: $ELEMENT does not exist."
+    exit
+fi
+done
+
+for ELEMENT in ${AFNI_ALIGN_LIN[@]}
+do
+echo "Bilinear: $ELEMENT"
+if [ ! -f "$ELEMENT" ]; then
+    echo "ERROR: $ELEMENT does not exist."
+    exit
+fi
+done
+
+
+
+echo "Keep matrix: $KEEP_TRANS"
+echo "Prefix: $APREFIX"
+echo "Cost funct: $AFNI_ALIGN_COST"
+
+# get some info about the input file. I'm going to copy it to a tmp img so that I can modify its header info without consequence.
+infullname="${AFNI_ALIGN_INPUT##*/}"
+indirname="${AFNI_ALIGN_INPUT%/*}"
+inbasename="${infullname%.*}"
+inextension="${infullname##*.}"
+if [ "$indirname" == "$AFNI_ALIGN_INPUT" ]; then
+  indirname="."
+fi
+if [ "$inextension" == "$inbasename" ]; then
+  inextension=""
+fi
+
+# Enter dir of input
+echo "================BASENAME======================"
+echo "inbasename: $inbasename"
+cd $indirname
+
+### If we run into issues with nifti image auto-interpreted as +tlrc, not creating +orig data, we can do the below
+## Lets put the input into orig space if not already.
+## Output is also orig space, as we only rigid align, no warp/strech/pull/etc
+#cp $AFNI_ALIGN_INPUT $dirname/.tmp_$fullname
+#AFNI_ALIGN_INPUT_cp=$dirname/.tmp_$fullname
+#3drefit -space ORIG $AFNI_ALIGN_INPUT_cp
+
+declare -a ALL_IMGs=("${AFNI_ALIGN_NN[@]}" "${AFNI_ALIGN_LIN[@]}" "${AFNI_ALIGN_INPUT}")
+for img in "${ALL_IMGs[@]}"
+do
+	rfullname="${img##*/}"
+	rdirname="${img%/*}"
+	rbasename="${rfullname%.*}"
+	rextension="${rfullname##*.}"
+	if [ "$rdirname" == "$img" ]; then
+	  rdirname="."
+	fi
+	if [ "$rextension" == "$rbasename" ]; then
+	  rextension=""
+	fi
+	echo "$rdirname/__tmp_c__$rfullname"
+	if [[ "$img" == *\/* ]]
+	then
+		mri_convert --in_center 0 0 0 $img $rdirname/__tmp_c__${rbasename}.nii
+	else
+		mri_convert --in_center 0 0 0 $img __tmp_c__${rbasename}.nii
+	fi
+done
+sleep 1
+
+echo "+++++++++++++++++++++++LS1+++++++++++++++++++++++"
+ls -lt |grep "tmp_c"
+echo "+++++++++++++++++++++++LS1+++++++++++++++++++++++"
+
+if [ "$AFNI_ALIGN_SS" = true ] ; then
+	@auto_tlrc -rigid_equiv -base $AFNI_ALIGN_TEMPLATE -init_xform AUTO_CENTER -pad_input 25 -dxyz 1 -no_pre -overwrite -prefix __tmp__$inbasename -input __tmp_c__${inbasename}.nii
+else
+	@auto_tlrc -rigid_equiv -base $AFNI_ALIGN_TEMPLATE -no_ss -init_xform AUTO_CENTER -pad_input 25 -dxyz 1 -no_pre -overwrite -prefix __tmp__$inbasename -input __tmp_c__${inbasename}.nii
+fi
+
+if [[ ! -f __tmp__${inbasename}.Xat.rigid.1D ]] ; then
+    echo 'Missing transformation matrix. Error with @auto_tlrc.'
+    exit
+fi
+
+mv __tmp__${inbasename}.Xat.rigid.1D ${inbasename}.Xat.rigid.1D
+rm __tmp__${inbasename}*
+rm pre*__tmp__${inbasename}*
+echo "=======================END DELETE======================="
+echo ""
+for img in "${AFNI_ALIGN_NN[@]}"
+do
+	rfullname="${img##*/}"
+	rdirname="${img%/*}"
+	rbasename="${rfullname%.*}"
+	rextension="${rfullname##*.}"
+	if [ "$rdirname" == "$img" ]; then
+	  rdirname="."
+	fi
+	if [ "$rextension" == "$rbasename" ]; then
+	  rextension=""
+	fi
+	if [[ "$img" == *\/* ]] 
+	then
+		3dAllineate -1Dmatrix_apply ${inbasename}.Xat.rigid.1D -master __tmp_c__${inbasename}.nii -final NN  -prefix __tmpa__${rbasename} -overwrite $rdirname/__tmp_c__${rbasename}.nii
+	else
+		3dAllineate -1Dmatrix_apply ${inbasename}.Xat.rigid.1D -master __tmp_c__${rbasename}.nii -final NN  -prefix __tmpa__${rbasename} -overwrite __tmp_c__${rbasename}.nii
+	fi
+	3dAFNItoNIFTI __tmpa__${rbasename}+orig 
+	mv __tmpa__${rbasename}.nii $APREFIX${rbasename}.nii
+	# Cleanup extra afni files
+	echo "=========================DELETE========================="
+	sleep 1
+	ls __tmpa__${rbasename}*
+	rm __tmpa__${imgbasename}*
+	echo "=======================END DELETE======================="
+	echo ""
+done
+echo "+++++++++++++++++++++++LS2+++++++++++++++++++++++"
+ls -lt |grep "tmp_c"
+echo "+++++++++++++++++++++++LS2+++++++++++++++++++++++"
+for img in "${AFNI_ALIGN_LIN[@]}"
+do
+        rfullname="${img##*/}"
+        rdirname="${img%/*}"
+        rbasename="${rfullname%.*}"
+        rextension="${rfullname##*.}"
+        if [ "$rdirname" == "$img" ]; then
+          rdirname="."
+        fi
+        if [ "$rextension" == "$rbasename" ]; then
+          rextension=""
+        fi
+	if [[ "$img" == *\/* ]]
+	then
+	        3dAllineate -1Dmatrix_apply ${inbasename}.Xat.rigid.1D -master __tmp_c__${rbasename}.nii -final cubic  -prefix __tmpa__${rbasename} -overwrite $rdirname/__tmp_c__${rbasename}.nii
+	else    
+		3dAllineate -1Dmatrix_apply ${inbasename}.Xat.rigid.1D -master __tmp_c__${rbasename}.nii -final cubic  -prefix __tmpa__$rbasename -overwrite __tmp_c__${rbasename}.nii
+	fi
+        3dAFNItoNIFTI __tmpa__${rbasename}+orig
+        mv __tmpa__${rbasename}.nii $APREFIX${rbasename}.nii
+        # Cleanup extra afni files
+        echo "=========================DELETE========================="
+	sleep 1
+        ls __tmpa__${rbasename}*
+        rm __tmpa__${imgbasename}*
+        echo "=======================END DELETE======================="
+        echo ""
+done
+echo "+++++++++++++++++++++++LS3+++++++++++++++++++++++"
+ls -lt |grep "tmp_c"
+echo "+++++++++++++++++++++++LS3+++++++++++++++++++++++"
+
+if [ "$KEEP_TRANS" = false ] ; then
+	echo "Removing transformation matrix"
+	echo "======================DELETE TRANS======================"
+	ls ${inbasename}.Xat.rigid.1D
+	rm ${inbasename}.Xat.rigid.1D
+	echo "========================================================"
+fi
+
+# If afni is interupted/errors, these tmp files can be left on the disk.
+# Here, I clean them.
+echo "======================Final Clean======================="
+
+for img in "${ALL_IMGs[@]}"
+do
+	rfullname="${img##*/}"
+	rdirname="${img%/*}"
+	rbasename="${rfullname%.*}"
+	rextension="${rfullname##*.}"
+	if [ "$rdirname" == "$img" ]; then
+		rdirname="."
+	fi
+	if [ "$rextension" == "$rbasename" ]; then
+		rextension=""
+	fi
+	echo "$rdirname/__tmp_c__${rbasename}.nii"
+	if [[ "$img" == *\/* ]]
+	then
+		if [[ -f $rdirname/__tmp_c__${rbasename}.nii ]]; then
+			rm $rdirname/__tmp_c__${rbasename}.nii
+		fi
+	else
+		if [[ -f __tmp_c__${rbasename}.nii ]]; then
+	        	rm __tmp_c__${rbasename}.nii
+		fi
+	fi
+done
+
+echo "Cleaning tmp files"
+if compgen -G "__ats_tmp__*" > /dev/null; then
+	ls __ats_tmp__*
+	rm __ats_tmp__*
+fi
+if compgen -G "pre.${inbasename}_XYZ_*" > /dev/null; then
+	ls pre.${inbasename}_XYZ_*
+	rm pre.${inbasename}_XYZ_*
+fi
+if compgen -G "${inbasename}*_shft.1D" > /dev/null; then
+	ls ${inbasename}*_shft.1D*
+        rm ${inbasename}*_shft.1D*
+fi
+if compgen -G "__tmp_c__*" > /dev/null; then
+	ls __tmp_c__*
+	rm __tmp_c__*
+fi
+echo "========================================================"
+
+echo "Done!"
+
